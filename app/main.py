@@ -1,8 +1,22 @@
 from fastapi import FastAPI, UploadFile, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 import subprocess
 import os
+from app.routers import n8n_processor
 
 app = FastAPI()
+
+# CORS middleware to allow frontend connections
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Configure this to your frontend URL in production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Include routers
+app.include_router(n8n_processor.router, prefix="/api", tags=["n8n"])
 
 @app.get("/process-image")
 async def process_image():
