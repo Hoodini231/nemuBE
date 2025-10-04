@@ -28,6 +28,3 @@ async def process_image():
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/")
-async def process_image(file: UploadFile):
