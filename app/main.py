@@ -9,6 +9,7 @@ import json
 import httpx
 from typing import List, Optional
 from fastapi import File, Form, UploadFile
+import uuid
 
 
 app = FastAPI()
@@ -26,9 +27,10 @@ app.add_middleware(
 # app.include_router(n8n_processor.router, prefix="/api", tags=["n8n"])
 
 N8N_WEBHOOK_URL = os.getenv("N8N_WEBHOOK_URL")
+N8N_REGENERATE_WEBHOOK_URL = os.getenv("N8N_REGENERATE_WEBHOOK_URL")
 
 # Dynamic path configuration
-KUMIKO_PATH = os.getenv("KUMIKO_PATH", "/Users/shaun/Documents/kumiko/kumiko")
+KUMIKO_PATH = os.getenv("KUMIKO_PATH", "/Users/wangruijie/projects/hackharvard/kumiko/kumiko")
 TEST_IMAGE_PATH = os.getenv("TEST_IMAGE_PATH", "test.png")
 
 async def process_image_with_kumiko(image_data, image_source="bytes"):
@@ -318,6 +320,185 @@ async def get_story_board(
         raise HTTPException(
             status_code=500,
             detail=f"Error processing request: {str(e)}"
+        )
+
+@app.post("/api/regenerate-panel")
+async def regenerate_panel(
+    original_image: UploadFile = File(...),
+    mask_image: UploadFile = File(...),
+    prompt: str = Form(...),
+    panel_index: int = Form(...),
+    style: str = Form(default="shonen")
+):
+    """
+    Endpoint to regenerate a specific panel using inpainting.
+    
+    Args:
+        original_image: The original panel image
+        mask_image: The mask indicating areas to regenerate
+        prompt: Description of what to generate in the masked area
+        panel_index: Index of the panel being regenerated
+        style: Art style (shonen/shojo/chibi/ink-wash)
+    """
+    # Validate style
+    valid_styles = ["shonen", "shojo", "chibi", "ink-wash"]
+    if style not in valid_styles:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid style. Must be one of: {', '.join(valid_styles)}"
+        )
+    
+    if not N8N_REGENERATE_WEBHOOK_URL:
+        raise HTTPException(
+            status_code=500,
+            detail="N8N regenerate webhook URL not configured. Please set N8N_REGENERATE_WEBHOOK_URL in .env file"
+        )
+    
+    print(f"🔄 Regenerating panel {panel_index} with style: {style}")
+    
+    try:
+        # Read the uploaded images
+        original_content = await original_image.read()
+        mask_content = await mask_image.read()
+        
+        # Prepare files for n8n webhook
+        files = [
+            ("original_image", (original_image.filename or f"original_{panel_index}.png", original_content, original_image.content_type)),
+            ("mask_image", (mask_image.filename or f"mask_{panel_index}.png", mask_content, mask_image.content_type))
+        ]
+        
+        # Prepare form data
+        data = {
+            "prompt": prompt,
+            "panel_index": str(panel_index),
+            "style": style
+        }
+        
+        # Forward to n8n webhook with extended timeout for image generation
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(
+                N8N_REGENERATE_WEBHOOK_URL,
+                data=data,
+                files=files
+            )
+            response.raise_for_status()
+            
+            # Check response content type
+            content_type = response.headers.get('content-type', '')
+            
+            # Handle different response types
+            if 'image/' in content_type:
+                # Binary image response
+                image_bytes = response.content
+                image_base64 = base64.b64encode(image_bytes).decode('utf-8')
+                ext = content_type.split('/')[-1]
+                mime_type = f'image/{ext}'
+                regenerated_image = f"data:{mime_type};base64,{image_base64}"
+                
+                print(f"✅ Panel {panel_index} regenerated successfully (binary)")
+                return {
+                    "status": "success",
+                    "panel_index": panel_index,
+                    "regenerated_image": regenerated_image,
+                    "n8n_status_code": response.status_code
+                }
+            
+            elif 'application/json' in content_type:
+                # JSON response
+                n8n_data = response.json()
+                
+                # Extract image from various possible JSON formats
+                regenerated_image = None
+                
+                if "image" in n8n_data:
+                    regenerated_image = n8n_data["image"]
+                elif "regenerated_image" in n8n_data:
+                    regenerated_image = n8n_data["regenerated_image"]
+                elif "result" in n8n_data:
+                    regenerated_image = n8n_data["result"]
+                elif "data" in n8n_data:
+                    regenerated_image = n8n_data["data"]
+                elif "output" in n8n_data:
+                    regenerated_image = n8n_data["output"]
+                elif "image_url" in n8n_data:
+                    # If it's a URL, fetch the image
+                    async with httpx.AsyncClient() as img_client:
+                        img_response = await img_client.get(n8n_data["image_url"])
+                        img_response.raise_for_status()
+                        image_bytes = img_response.content
+                        image_base64 = base64.b64encode(image_bytes).decode('utf-8')
+                        regenerated_image = f"data:image/png;base64,{image_base64}"
+                
+                if not regenerated_image:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"n8n response received but no image data found in JSON: {list(n8n_data.keys())}"
+                    )
+                
+                # Ensure base64 format
+                if not regenerated_image.startswith("data:image"):
+                    if regenerated_image.startswith("http"):
+                        # It's a URL, fetch it
+                        async with httpx.AsyncClient() as img_client:
+                            img_response = await img_client.get(regenerated_image)
+                            img_response.raise_for_status()
+                            image_bytes = img_response.content
+                            image_base64 = base64.b64encode(image_bytes).decode('utf-8')
+                            regenerated_image = f"data:image/png;base64,{image_base64}"
+                    else:
+                        # Assume it's raw base64
+                        regenerated_image = f"data:image/png;base64,{regenerated_image}"
+                
+                print(f"✅ Panel {panel_index} regenerated successfully (JSON)")
+                return {
+                    "status": "success",
+                    "panel_index": panel_index,
+                    "regenerated_image": regenerated_image,
+                    "n8n_data": n8n_data,
+                    "n8n_status_code": response.status_code
+                }
+            
+            else:
+                # Try to parse as JSON anyway
+                try:
+                    n8n_data = response.json()
+                    return {
+                        "status": "success",
+                        "panel_index": panel_index,
+                        "n8n_data": n8n_data,
+                        "n8n_status_code": response.status_code
+                    }
+                except:
+                    # Treat as binary image
+                    image_bytes = response.content
+                    image_base64 = base64.b64encode(image_bytes).decode('utf-8')
+                    regenerated_image = f"data:image/png;base64,{image_base64}"
+                    
+                    print(f"✅ Panel {panel_index} regenerated successfully (binary fallback)")
+                    return {
+                        "status": "success",
+                        "panel_index": panel_index,
+                        "regenerated_image": regenerated_image,
+                        "n8n_status_code": response.status_code
+                    }
+    
+    except httpx.HTTPStatusError as e:
+        print(f"❌ n8n HTTP error: {e.response.status_code}")
+        raise HTTPException(
+            status_code=e.response.status_code,
+            detail=f"n8n regenerate webhook error: {e.response.text}"
+        )
+    except httpx.RequestError as e:
+        print(f"❌ Connection error: {str(e)}")
+        raise HTTPException(
+            status_code=503,
+            detail=f"Failed to connect to n8n regenerate webhook: {str(e)}"
+        )
+    except Exception as e:
+        print(f"❌ Error: {type(e).__name__} - {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error processing panel regeneration: {str(e)}"
         )
 
 @app.get("/process-image")
