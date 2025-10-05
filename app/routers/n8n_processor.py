@@ -59,7 +59,6 @@ async def get_story_board(
             return {
                 "status": "success",
                 "message": "Story board request processed",
-                "data": response.json() if response.content else None,
                 "n8n_status_code": response.status_code
             }
 
