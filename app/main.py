@@ -1,8 +1,9 @@
-from time import time
-from venv import logger
-from fastapi import FastAPI, UploadFile, HTTPException, File
+
+from fastapi import FastAPI, UploadFile, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 import subprocess
 import os
+from app.routers import n8n_processor
 import json
 from fastapi import Request
 import base64
@@ -11,33 +12,21 @@ from PIL import Image
 
 app = FastAPI()
 
-@app.post("/process-image")
-async def process_image(request: Request, file: UploadFile = File(...)):
-    try:    
-        # Save the uploaded file as binary
-        file_location = "uploaded_image.png"
-        with open(file_location, "wb") as f:
-            f.write(await file.read())
+# CORS middleware to allow frontend connections
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Configure this to your frontend URL in production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-        # Read the request body
-        request = await request.json()
+# Include routers
+app.include_router(n8n_processor.router, prefix="/api", tags=["n8n"])
 
-        # Extract base64 images from the request body
-        if "images" not in request or not isinstance(request["images"], list):
-            raise HTTPException(status_code=400, detail="Invalid request format. 'images' field is required and must be a list.")
-
-        images = []
-        for idx, image_data in enumerate(request["images"]):
-            try:
-                # Decode the base64 image
-                image_bytes = base64.b64decode(image_data)
-                image = Image.open(BytesIO(image_bytes))
-                image_path = f"image_{idx}.png"
-                image.save(image_path)
-                images.append(image_path)
-            except Exception as e:
-                raise HTTPException(status_code=400, detail=f"Failed to process image {idx}: {str(e)}")
-            
+@app.get("/process-image")
+async def process_image():
+    try:
         # Leverage kumiko locally
         kumiko_path = os.path.abspath("/Users/shaun/Documents/kumiko/kumiko") 
         # Execute the kumiko command to subdivide the panels
@@ -63,8 +52,6 @@ async def process_image(request: Request, file: UploadFile = File(...)):
         
 
         # Extract relevant information for panel sizing and positions
-        size = None
-        panelData = None
         size = output_json[0]['size']
         panelData = output_json[0]['panels']
 
