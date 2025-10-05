@@ -1,3 +1,4 @@
+import base64
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import subprocess
@@ -104,6 +105,9 @@ async def process_image_with_kumiko(image_data, image_source="bytes"):
                 ext = panel_file.lower().split('.')[-1]
                 mime_type = 'image/jpeg' if ext in ['jpg', 'jpeg'] else 'image/png'
                 panel_images.append(f"data:{mime_type};base64,{panel_base64}")
+        
+        image_data = base64.b64encode(image_bytes).decode('utf-8')
+        image_data = f"data:image/png;base64,{image_data}"
 
         # Clean up temp files
         os.remove(temp_image_path)
@@ -115,7 +119,8 @@ async def process_image_with_kumiko(image_data, image_source="bytes"):
             "panels": panel_images,
             "coordinates": panel_coordinates,
             "total_size": size,
-            "panel_count": len(panels_generated)
+            "panel_count": len(panels_generated),
+            "original_image": image_data,
         }
 
     except Exception as e:
@@ -284,11 +289,11 @@ async def get_story_board(
 
             # Return complete panel information to frontend
             print(f"✅ Success: Generated {kumiko_result['panel_count']} panels")
-
             return {
                 "status": "success",
                 "message": "Story board generated and processed successfully",
                 "n8n_data": n8n_data,
+                "final_image": kumiko_result["original_image"],
                 "panels": kumiko_result["panels"],
                 "coordinates": kumiko_result["coordinates"],
                 "total_size": kumiko_result["total_size"],
